@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="hr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OWRX+ MQTT</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            background-color: #121212; 
+            color: white; 
+            font-family: Arial, sans-serif;
+        }
+
+        h1 {
+            color: gold;
+            text-align: center;
+        }
+
+        table {
+            width: 100%;
+            margin-top: 20px;
+            border-collapse: collapse;
+        }
+
+        th, td {
+            padding: 10px;
+            text-align: center;
+            border: 1px solid #444;
+        }
+
+        th {
+            background-color: #333;
+        }
+
+        tr:nth-child(even) {
+            background-color: #222;
+        }
+
+        tr:nth-child(odd) {
+            background-color: #2a2a2a;
+        }
+    </style>
+</head>
+<body>
+    <h1>Radiosonde database from OWRX+ MQTT -> 9A4AM@2026</h1>
+	    <button onclick="window.open('/map', '_blank')"
+            style="padding:10px 20px;font-size:16px;">
+        MAP
+        </button>
+    <table>
+        <thead>
+            <tr>
+                <th>Sonde ID</th>
+                <th>Lat</th>
+                <th>Lon</th>
+                <th>Alt(m)</th>
+                <th>Speed(km/h)</th>
+                <th>Climb(m/s)</th>
+                <th>Dir</th>
+                <th>Typ</th>
+                <th>Time(Last frame)</th>
+                <th>Freq(MHz)</th>
+                <th>Launch place</th>
+                <th>Batt(V)</th>
+            </tr>
+        </thead>
+        <tbody id="data-table"></tbody>
+    </table>
+
+    <script>
+        
+        function fetchData() {
+            fetch('/data')
+                .then(response => response.json())
+                .then(data => {
+                    const tableBody = document.getElementById('data-table');
+                    tableBody.innerHTML = ''; 
+					
+					
+                    data.sort((a, b) => new Date(b.time) - new Date(a.time));
+                    data.forEach(entry => {
+                        const row = document.createElement('tr');
+                        row.innerHTML = `
+                            <td>${entry.ser}</td>
+                            <td>${entry.lat}</td>
+                            <td>${entry.lon}</td>
+                            <td>${entry.alt}</td>
+                            <td>${(entry.speed * 3.6).toFixed(1)}</td>
+                            <td>${entry.climb}</td>
+                            <td>${entry.dir}</td>
+                            <td>${entry.type}</td>
+                            <td>${entry.time}</td>
+                            <td>${entry.freq}</td>
+                            <td>${entry.launchsite}</td>
+                            <td>${entry.batt}</td>
+							
+                        `;
+                        tableBody.appendChild(row);
+                    });
+                })
+                .catch(error => {
+                    console.error('Error fetching data:', error);
+                });
+        }
+
+        // Auto update every 5 seconds
+        setInterval(fetchData, 5000); // 5000 ms = 5 sekundi
+
+        // First call for data
+        fetchData();
+    </script>
+</body>
+</html>

@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>OWRX+ MQTT Radiosonde Map</title>
+
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <style>
+        body { margin: 0; }
+        #map { width: 100vw; height: 100vh; }
+
+        .legend, .controls {
+            background: rgba(0,0,0,0.75);
+            color: white;
+            padding: 10px;
+            font-size: 14px;
+            line-height: 18px;
+            border-radius: 6px;
+            z-index: 1000; 
+            position: absolute;
+        }
+
+        .legend img {
+            vertical-align: middle;
+            margin-right: 6px;
+        }
+
+        .controls label {
+            display: block;
+            cursor: pointer;
+        }
+
+        /* Pozicije */
+        .legend { bottom: 10px; right: 10px; }
+        .controls { top: 10px; right: 10px; }
+    </style>
+</head>
+<body>
+
+<!--  checkbox -->
+<div class="controls">
+    <label><input type="checkbox" id="hideOld"> Hide sondes &gt; 24h</label>
+    <label><input type="checkbox" id="autoCenter"> Auto-center active</label>
+</div>
+
+<!-- Legend -->
+<div class="legend">
+    <b>Legend</b><br><br>
+    <img src="https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-green.png"> Active ascent (&lt;2h)<br>
+    <img src="https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png"> Active descent (&lt;2h)<br>
+    <img src="https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-yellow.png"> Old ascent (&gt;2h)<br>
+    <img src="https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-violet.png"> Old descent (&gt;2h)
+</div>
+
+<div id="map"></div>
+
+<script>
+    const map = L.map('map').setView([45.8, 16.0], 6);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '© OpenStreetMap'
+    }).addTo(map);
+
+    let markers = {};
+
+    // === ICON LOGIC ===
+    function getIcon(climb, timeStr) {
+        const packetTime = new Date(timeStr.replace(' ', 'T')).getTime();
+        const ageSeconds = (Date.now() - packetTime) / 1000;
+        const isFresh = ageSeconds <= 7200; // 2h
+
+        let color = climb >= 0 ? (isFresh ? 'green' : 'yellow') : (isFresh ? 'red' : 'violet');
+
+        return L.icon({
+            iconUrl: `https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-${color}.png`,
+            shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+            iconSize: [25, 41],
+            iconAnchor: [12, 41],
+            popupAnchor: [1, -34]
+        });
+    }
+
+    // === UPDATE MAP ===
+    function updateMap() {
+        fetch('/data')
+            .then(r => r.json())
+            .then(data => {
+                const hideOldElem = document.getElementById('hideOld');
+                const autoCenterElem = document.getElementById('autoCenter');
+                const hideOld = hideOldElem ? hideOldElem.checked : false;
+                const autoCenter = autoCenterElem ? autoCenterElem.checked : false;
+
+                let bounds = L.latLngBounds();
+
+                data.forEach(s => {
+                    if (s.lat == null || s.lon == null) return;
+
+                    const packetTime = new Date(s.time.replace(' ', 'T')).getTime();
+                    const ageSeconds = (Date.now() - packetTime) / 1000;
+
+                    // Hide old sondes >24h
+                    if (hideOld && ageSeconds > 86400) {
+                        if (markers[s.ser]) {
+                            map.removeLayer(markers[s.ser]);
+                            delete markers[s.ser];
+                        }
+                        return;
+                    }
+
+                    const popup = `
+                        <b>Serial:</b> ${s.ser}<br>
+                        <b>Type:</b> ${s.type}<br>
+                        <b>Lat:</b> ${s.lat}<br>
+                        <b>Lon:</b> ${s.lon}<br>
+                        <b>Alt:</b> ${s.alt} m<br>
+                        <b>Climb:</b> ${s.climb} m/s<br>
+                        <b>Speed:</b> ${(s.speed*3.6).toFixed(1)} km/h<br>
+                        <b>Dir:</b> ${s.dir}<br>
+                        <b>Freq:</b> ${s.freq} MHz<br>
+                        <b>RSSI:</b> ${s.rssi}<br>
+                        <b>Sats:</b> ${s.sats}<br>
+                        <b>Batt:</b> ${s.batt}<br>
+                        <b>Last packet:</b>
+                        ${new Date(s.time.replace(' ', 'T')).toLocaleString('hr-HR', {
+                            day: '2-digit',
+                            month: '2-digit',
+                            year: 'numeric',
+                            hour: '2-digit',
+                            minute: '2-digit',
+                            second: '2-digit',
+                            hour12: false
+                        })}
+                    `;
+
+                    if (markers[s.ser]) {
+                        markers[s.ser].setLatLng([s.lat, s.lon]);
+                        markers[s.ser].setIcon(getIcon(s.climb, s.time));
+                        markers[s.ser].setPopupContent(popup);
+                    } else {
+                        markers[s.ser] = L.marker([s.lat, s.lon], { icon: getIcon(s.climb, s.time) })
+                            .addTo(map)
+                            .bindPopup(popup);
+                    }
+
+                    if (autoCenter && ageSeconds <= 7200) {
+                        bounds.extend([s.lat, s.lon]);
+                    }
+                });
+
+                if (autoCenter && bounds.isValid()) {
+                    map.fitBounds(bounds, { padding: [50, 50] });
+                }
+            });
+    }
+
+    updateMap();
+    setInterval(updateMap, 1000);
+</script>
+
+</body>
+</html>
