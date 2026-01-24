@@ -1,5 +1,5 @@
 # OWRX-MQTT-for-radiosonde-with-Web-and-APRS-based-uploader-to-server-for-radiosonde-Radiosondy-
-OWRX+ MQTT for radiosonde with Web and APRS based server for radiosonde (Radiosondy).
+OWRX+ MQTT for radiosonde with Web (table or radiosonde show on the map with popup information) and APRS based server for radiosonde (Radiosondy).
 
 
 
