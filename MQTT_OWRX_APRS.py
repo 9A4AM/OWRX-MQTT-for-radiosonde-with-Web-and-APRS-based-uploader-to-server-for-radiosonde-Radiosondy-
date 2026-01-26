@@ -12,8 +12,24 @@ from models import db, Radiosonda
 from datetime import datetime
 import time
 import aprs
+import configparser
+
 
 DATABASE = "sqlite:///radiosonde.db"
+
+
+
+# =======================
+# SETTINGS.INI
+# =======================
+
+config = configparser.ConfigParser()
+config.read("settings.ini")
+
+PORT_WEBSERVER = int(
+    config.get("SERVER", "port_webserver", fallback="80")
+)
+
 
 app = Flask(__name__)
 app.config["SQLALCHEMY_DATABASE_URI"] = DATABASE
@@ -35,7 +51,7 @@ sonde_freq_cache = {}   # ser -> freq
 
 def on_connect(client, userdata, flags, rc):
     print("Connected to Mosquitto (OpenWebRX)")
-    client.subscribe("openwebrx/radiosonde/#")   # subscribe to all OWRX sonde
+    client.subscribe("openwebrx/radiosonde/#")
 
 def on_message(client, userdata, msg):
     try:
@@ -47,25 +63,23 @@ def on_message(client, userdata, msg):
         print(f"Received OWRX SONDE data: {raw}")
         data = raw.get("data", {})
 
-        # Choice APRS ID (aprsid if exist, if not id/source)
-        # ser_value = data.get("aprsid") or data.get("id") or raw.get("source")
+        # --- SONDE TYPE / MODEL ---
+        sonde_type = data.get("type")
+        sonde_model = clean_subtype(data.get("subtype"))
+
         # --- Define APRS ser / Payload_ID ---
         ser_value = None
-        sonde_type = data.get("type")
         source_key = raw.get("source") or data.get("rawid") or data.get("id")
 
-        # If not DFM, not use or hold DFM cache
+        # If not DFM, clear DFM cache
         if sonde_type != "DFM" and source_key in dfm_id_cache:
             del dfm_id_cache[source_key]
 
-
-
-
-        # If decoder use aprsid – use this ID
+        # If decoder provides aprsid
         if data.get("aprsid"):
             ser_value = data["aprsid"]
 
-        # M20 sonde – generate APRS ID
+        # M20
         elif sonde_type == "M20" and "rawid" in data and "id" in data:
             try:
                 raw_part = data["rawid"].split("_")[1][:2]
@@ -75,30 +89,25 @@ def on_message(client, userdata, msg):
             except Exception as e:
                 print("Error generating M20 APRS ID:", e)
 
-        # DFM sonde – wait for ID 
+        # DFM
         elif sonde_type == "DFM":
-            # If ID exist in packet
             if "id" in data and data["id"]:
                 try:
-                    #  DFM stil ID
                     dfm_num = ''.join(filter(str.isdigit, data["id"]))
                     ser_value = f"D{dfm_num}"
 
-                    # remember ID
                     if source_key:
                         dfm_id_cache[source_key] = ser_value
 
                     print(f"Generated DFM APRS ID: {ser_value}")
-
                 except Exception as e:
                     print("Error generating DFM APRS ID:", e)
 
-            # If ID not exist – try from cache-a
             elif source_key in dfm_id_cache:
                 ser_value = dfm_id_cache[source_key]
                 print(f"Using cached DFM APRS ID: {ser_value}")
 
-        #  fallback – use id or source
+        # fallback
         if not ser_value:
             ser_value = data.get("id") or raw.get("source")
 
@@ -106,31 +115,25 @@ def on_message(client, userdata, msg):
             print("No sonde ID/aprsid, skipping message")
             return
 
-
-
         # time
         ts = int(raw.get("timestamp", datetime.utcnow().timestamp() * 1000) / 1000)
         vframe_value = ts
 
         with app.app_context():
-            # Dedup
             existing = Radiosonda.query.filter_by(ser=ser_value, vframe=vframe_value).first()
             if existing:
                 local_time = datetime.fromtimestamp(vframe_value).strftime("%Y-%m-%d %H:%M:%S")
                 print(f"Duplicate sonde {ser_value} @ {local_time}, skipping")
                 return
 
-            # --- speed ---
-            hs_ms = raw.get("speed", data.get("vel_h"))      
-            vs_ms = raw.get("vspeed", data.get("vel_v"))     
+            hs_ms = raw.get("speed", data.get("vel_h"))
+            vs_ms = raw.get("vspeed", data.get("vel_v"))
 
             hs_kmh = round(hs_ms / 3.6, 1) if hs_ms is not None else None
             climb_1d = round(vs_ms, 1) if vs_ms is not None else None
 
-            # --- frequency ---
             freq_rx = raw.get("freq", data.get("tx_frequency")) or raw.get("freq")
 
-            # If we have frequency for this sonde – DO NOT CHANGE
             if ser_value in sonde_freq_cache:
                 freq_final = sonde_freq_cache[ser_value]
             else:
@@ -142,10 +145,9 @@ def on_message(client, userdata, msg):
                 lat=raw.get("lat", data.get("lat")),
                 lon=raw.get("lon", data.get("lon")),
                 alt=raw.get("altitude", data.get("alt")),
-                speed=hs_kmh,                         
+                speed=hs_kmh,
                 dir=raw.get("course", data.get("heading")),
-                # type=data.get("type"),
-                type=data.get("subtype") if data.get("type") in ["RS41", "DFM"] else data.get("type"),
+                type=sonde_model if sonde_type == "DFM" else sonde_type,
                 ser=ser_value,
                 time=ts,
                 sats=raw.get("sats", data.get("sats")),
@@ -166,7 +168,6 @@ def on_message(client, userdata, msg):
             db.session.commit()
             print(f"Saved OWRX sonde {ser_value}")
 
-            # APRS upload
             aprs.send_telemetry({
                 "ser": ser_value,
                 "lat": new_entry.lat,
@@ -174,8 +175,8 @@ def on_message(client, userdata, msg):
                 "alt": new_entry.alt,
                 "time": new_entry.time,
                 "dir": new_entry.dir,
-                "speed": new_entry.speed,      
-                "climb": new_entry.climb,    
+                "speed": new_entry.speed,
+                "climb": new_entry.climb,
                 "temp": new_entry.temp,
                 "humidity": new_entry.humidity,
                 "batt": new_entry.batt,
@@ -187,7 +188,6 @@ def on_message(client, userdata, msg):
         print(f"Error processing OWRX message: {e}")
 
 
-
 # =======================
 # MQTT CLIENT
 # =======================
@@ -197,7 +197,7 @@ client.on_connect = on_connect
 client.on_message = on_message
 
 client.connect("localhost", 1883, 60)
-client.loop_start()  # start MQTT in background
+client.loop_start()
 
 
 # =======================
@@ -228,7 +228,6 @@ def get_data():
 
     formatted_data = []
     for r in data:
-        # formating data
         alt = round(r.alt, 1) if r.alt is not None else None
         climb = round(r.climb, 1) if r.climb is not None else None
         dir = int(round(r.dir)) if r.dir is not None else None
@@ -261,6 +260,11 @@ def get_data():
     return jsonify(formatted_data)
 
 
+def clean_subtype(subtype):
+    if not subtype:
+        return None
+    return subtype.split(":", 1)[1] if ":" in subtype else subtype
+
 
 @app.route("/map")
 def map_view():
@@ -276,7 +280,8 @@ if __name__ == "__main__":
 
     try:
         print("Starting Web server (IP:1191) + APRS + MQTT server for OpenWebRX SONDE by 9A4AM@2026 ...")
-        app.run(debug=False, host="0.0.0.0", port=1191)
+        app.run(debug=False, host="0.0.0.0", port=PORT_WEBSERVER)
+
 
     except KeyboardInterrupt:
         print("\nShutting down...")
@@ -286,5 +291,3 @@ if __name__ == "__main__":
         client.disconnect()
         client.loop_stop()
         print("Clean shutdown done")
-
-
