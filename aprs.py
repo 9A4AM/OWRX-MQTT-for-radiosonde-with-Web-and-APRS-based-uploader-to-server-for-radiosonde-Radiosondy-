@@ -63,7 +63,7 @@ def aprs_latlon(lat, lon):
 
 def _connect():
     global _sock
-    print("[APRS] Connecting...")
+    print(f"[APRS] Connecting...{datetime.now().strftime('%d-%m-%Y %H:%M:%S')}")
 
     _sock = socket.create_connection((APRS_SERVER, APRS_PORT), timeout=10)
     _sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -78,7 +78,7 @@ def _connect():
     if not resp.startswith("#"):
         raise Exception("APRS login failed")
 
-    print("[APRS] Login OK")
+    print(f"[APRS] Login OK... {datetime.now().strftime('%d-%m-%Y %H:%M:%S')}")
 
 
 # =======================
@@ -105,7 +105,7 @@ def _send_beacon():
 
     _sock.sendall(packet.encode())
     _last_beacon = now
-    print("[APRS] Beacon sent")
+    print(f"[APRS] Beacon sent...{datetime.now().strftime('%d-%m-%Y %H:%M:%S')}")
 
 # =======================
 # PUBLIC API
@@ -158,7 +158,7 @@ def send_telemetry(data: dict):
             lat_s, lon_s = aprs_latlon(lat, lon)
             alt_ft = int(alt * 3.28084)
             speed_kn = int(round(speed_ms * 1.94384))   #  knots
-            climb_val = round(climb, 1)               
+            climb_val = round(climb, 1)
 
             time_h = datetime.utcfromtimestamp(time_val).strftime("%H%M%S")
 
@@ -182,7 +182,7 @@ def send_telemetry(data: dict):
             )
 
             _sock.sendall(packet.encode())
-            print(f"[APRS] Sent {ser}")
+            print(f"[APRS] Sent {ser}...{datetime.now().strftime('%d-%m-%Y %H:%M:%S')}")
 
         except Exception as e:
             print("[APRS] ERROR:", e)
@@ -210,7 +210,7 @@ def _aprs_loop():
             time.sleep(1)
 
         except Exception as e:
-            print(f"[APRS] LOOP ERROR: {e}")
+            print(f"[APRS] LOOP ERROR: {e}....{datetime.now().strftime('%d-%m-%Y %H:%M:%S')}")
             try:
                 if _sock:
                     _sock.close()
@@ -226,7 +226,7 @@ def start():
 
     t = threading.Thread(target=_aprs_loop, daemon=True)
     t.start()
-    print("[APRS] Background thread started")
+    print(f"[APRS] Background thread started....{datetime.now().strftime('%d-%m-%Y %H:%M:%S')}")
 
 def stop():
     global _stop, _sock
