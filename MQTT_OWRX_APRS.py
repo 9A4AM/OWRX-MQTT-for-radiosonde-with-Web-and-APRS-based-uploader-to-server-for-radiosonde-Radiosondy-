@@ -43,6 +43,8 @@ with app.app_context():
 dfm_id_cache = {}
 
 sonde_freq_cache = {}   # ser -> freq
+rs41_type_cache = {}   # ser -> RS41-SGP / RS41-SG
+
 
 
 # =======================
@@ -116,13 +118,16 @@ def on_message(client, userdata, msg):
             return
 
         # time
-        ts = int(raw.get("timestamp", datetime.utcnow().timestamp() * 1000) / 1000)
-        vframe_value = ts
+        ts_raw = raw.get("timestamp", int(time.time() * 1000))
+        ts = ts_raw // 1000
+        vframe_value = ts_raw   # ← MILISEKUNDE
+
 
         with app.app_context():
             existing = Radiosonda.query.filter_by(ser=ser_value, vframe=vframe_value).first()
             if existing:
-                local_time = datetime.fromtimestamp(vframe_value).strftime("%Y-%m-%d %H:%M:%S")
+                local_time = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+
                 print(f"Duplicate sonde {ser_value} @ {local_time}, skipping")
                 return
 
@@ -140,6 +145,18 @@ def on_message(client, userdata, msg):
                 freq_final = freq_rx
                 if freq_final:
                     sonde_freq_cache[ser_value] = freq_final
+            real_id = data.get("id")
+            # --- FIX RS41 subtype handling ---
+            if sonde_type == "RS41" and sonde_model and sonde_model.startswith("RS41"):
+                sonde_type = sonde_model
+
+            # Keep last known RS41 subtype for this sonde
+            if sonde_type == "RS41" and ser_value:
+                last = Radiosonda.query.filter_by(ser=ser_value).order_by(Radiosonda.vframe.desc()).first()
+                if last and last.type and last.type.startswith("RS41-"):
+                    sonde_type = last.type
+
+
 
             new_entry = Radiosonda(
                 lat=raw.get("lat", data.get("lat")),
@@ -160,7 +177,7 @@ def on_message(client, userdata, msg):
                 humidity=data.get("humidity") or data.get("weather", {}).get("humidity"),
                 frame=data.get("frame"),
                 vframe=vframe_value,
-                launchsite=None,
+                launchsite=real_id,
                 batt=data.get("batt") or data.get("battery")
             )
 
