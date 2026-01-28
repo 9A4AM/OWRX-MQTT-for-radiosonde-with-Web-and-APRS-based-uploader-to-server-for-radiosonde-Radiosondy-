@@ -58,9 +58,36 @@
 
 <script>
     const map = L.map('map').setView([45.8, 16.0], 6);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '© OpenStreetMap'
-    }).addTo(map);
+// === BASE MAPS ===
+const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap'
+});
+
+const topo = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenTopoMap'
+});
+
+const satellite = L.tileLayer(
+    'https://server.arcgisonline.com/ArcGIS/rest/services/' +
+    'World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+        attribution: '© Esri'
+    }
+);
+
+// Default
+osm.addTo(map);
+
+// Layer selector
+L.control.layers(
+    {
+        "Map": osm,
+        "Topo": topo,
+        "Satellite": satellite
+    },
+    null,
+    { position: 'topleft' }
+).addTo(map);
+
 
     let markers = {};
 
@@ -118,7 +145,7 @@
                         <b>Speed:</b> ${(s.speed*3.6).toFixed(1)} km/h<br>
                         <b>Dir:</b> ${s.dir}<br>
                         <b>Freq:</b> ${s.freq} MHz<br>
-                        <b>RSSI:</b> ${s.rssi}<br>
+                        <b>Raw ID:</b> ${s.launchsite}<br>
                         <b>Sats:</b> ${s.sats}<br>
                         <b>Batt:</b> ${s.batt}<br>
                         <b>Last packet:</b>
