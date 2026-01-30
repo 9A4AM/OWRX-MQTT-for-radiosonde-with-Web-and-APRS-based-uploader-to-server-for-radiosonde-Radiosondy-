@@ -98,7 +98,7 @@ def on_message(client, userdata, msg):
                     dfm_num = ''.join(filter(str.isdigit, data["id"]))
                     ser_value = f"D{dfm_num}"
 
-                    if source_key:
+                    if source_key and ser_value and ser_value != "D":
                         dfm_id_cache[source_key] = ser_value
 
                     print(f"Generated DFM APRS ID: {ser_value}")
@@ -116,6 +116,19 @@ def on_message(client, userdata, msg):
         if not ser_value:
             print("No sonde ID/aprsid, skipping message")
             return
+        s = ser_value.strip().lower()
+        # Skip placeholder / invalid DFM IDs:
+        # D, Dxxxx, D-xxxx, DFM-xxxx
+        if (
+            s == "d"
+            or (
+                (s.startswith("dfm-") or s.startswith("d-") or s.startswith("d"))
+                and "x" in s
+            )
+        ):
+            print(f"Skipping placeholder sonde ID: {ser_value}")
+            return
+
 
         # time
         ts_raw = raw.get("timestamp", int(time.time() * 1000))
