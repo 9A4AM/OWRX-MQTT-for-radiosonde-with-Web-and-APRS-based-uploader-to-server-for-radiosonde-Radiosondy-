@@ -1,22 +1,26 @@
 #-------------------------------------------------------------------------------
-# Name:        OpenWebRX MQTT
-# Purpose:     OpenWebRX MQTT → DB (Radiosonda) + Flask web + APRS_Upload
+# Name:        OpenWebRX+ MQTT
+# Purpose:     OpenWebRX+ MQTT → DB (Radiosonda) + Flask web( with map) + APRS_Upload
+#              + SondeHub_upload
 # Author:      9A4AM
-# Created:     19.01.2026
+# Created:     19.01.2026 (rev.19.02.2026)
 #-------------------------------------------------------------------------------
 
 import paho.mqtt.client as mqtt
 import json
 from flask import Flask, render_template, jsonify
 from models import db, Radiosonda
-from datetime import datetime
+from datetime import datetime, timezone
 import time
 import aprs
+import sondehub
 import configparser
 
 
 DATABASE = "sqlite:///radiosonde.db"
 
+version = "1.0"
+print(f"Version: {version}")
 
 
 # =======================
@@ -31,6 +35,62 @@ PORT_WEBSERVER = int(
 )
 
 
+# =======================
+# SONDEHUB SETTINGS
+# =======================
+
+SONDEHUB_ENABLED = config.getboolean(
+    "SONDEHUB", "SondeHub_Enable", fallback=False
+)
+
+SONDEHUB_UPLOADER = config.get(
+    "SONDEHUB", "SondeHub_Uploader", fallback=None
+)
+
+# SONDEHUB_SOFTWARE_NAME = config.get(
+#     "SONDEHUB", "SondeHub_Software_Name", fallback="Unknown"
+# )
+
+SONDEHUB_SOFTWARE_NAME = "OWRX+_9A4AM_Uploader"
+
+# SONDEHUB_SOFTWARE_VERSION = config.get(
+#     "SONDEHUB", "SondeHub_Software_Version", fallback="0.1"
+# )
+
+SONDEHUB_SOFTWARE_VERSION = version
+
+SONDEHUB_UPLOAD_INTERVAL = config.getint(
+    "SONDEHUB", "SondeHub_Upload_interval", fallback=30
+)
+
+SONDEHUB_LAT = config.getfloat(
+    "STATION", "STATION_Lat", fallback=0
+)
+
+SONDEHUB_LON = config.getfloat(
+    "STATION", "STATION_Lon", fallback=0
+)
+
+SONDEHUB_ALT = config.getfloat(
+    "STATION", "STATION_Alt",
+    fallback=0
+)
+
+SONDEHUB_ANTENNA = config.get(
+    "SONDEHUB", "SondeHub_Antenna", fallback=None
+)
+
+
+# Optional e-mail
+SONDEHUB_EMAIL = config.get(
+    "SONDEHUB", "SondeHub_Email", fallback=None
+)
+
+
+# APRS Enable
+
+APRS_ENABLED = config.getboolean("APRS", "APRS_Enable", fallback=False)
+
 app = Flask(__name__)
 app.config["SQLALCHEMY_DATABASE_URI"] = DATABASE
 db.init_app(app)
@@ -44,7 +104,34 @@ dfm_id_cache = {}
 
 sonde_freq_cache = {}   # ser -> freq
 rs41_type_cache = {}   # ser -> RS41-SGP / RS41-SG
+# Globalni set za privremenu deduplikaciju paketa
+_recent_packets: set = set()
 
+
+
+
+
+def init_uploaders():
+
+    aprs.start()
+    print("APRS uploader started")
+
+    if SONDEHUB_ENABLED:
+        sondehub.start(
+            uploader=SONDEHUB_UPLOADER,
+            software_name=SONDEHUB_SOFTWARE_NAME,
+            software_version=SONDEHUB_SOFTWARE_VERSION,
+            lat=SONDEHUB_LAT,
+            lon=SONDEHUB_LON,
+            alt=SONDEHUB_ALT,
+            antenna=SONDEHUB_ANTENNA,
+            email=SONDEHUB_EMAIL,
+            # upload_interval=SONDEHUB_UPLOAD_INTERVAL
+        )
+        print("SondeHub uploader started")
+
+
+init_uploaders()
 
 
 # =======================
@@ -62,7 +149,7 @@ def on_message(client, userdata, msg):
         if raw.get("mode") != "SONDE":
             return
 
-        print(f"Received OWRX SONDE data: {raw}")
+        # print(f"Received OWRX SONDE data: {raw}")
         data = raw.get("data", {})
 
         # --- SONDE TYPE / MODEL ---
@@ -87,7 +174,7 @@ def on_message(client, userdata, msg):
                 raw_part = data["rawid"].split("_")[1][:2]
                 id_suffix = data["id"].split("-")[-1][-5:]
                 ser_value = f"ME{raw_part}{id_suffix}"
-                print(f"Generated M20 APRS ID: {ser_value}")
+                # print(f"Generated M20 APRS ID: {ser_value}")
             except Exception as e:
                 print("Error generating M20 APRS ID:", e)
 
@@ -101,7 +188,7 @@ def on_message(client, userdata, msg):
                     if source_key and ser_value and ser_value != "D":
                         dfm_id_cache[source_key] = ser_value
 
-                    print(f"Generated DFM APRS ID: {ser_value}")
+                    # print(f"Generated DFM APRS ID: {ser_value}")
                 except Exception as e:
                     print("Error generating DFM APRS ID:", e)
 
@@ -198,6 +285,8 @@ def on_message(client, userdata, msg):
             db.session.commit()
             print(f"Saved OWRX sonde {ser_value}")
 
+
+
             aprs.send_telemetry({
                 "ser": ser_value,
                 "lat": new_entry.lat,
@@ -213,6 +302,24 @@ def on_message(client, userdata, msg):
                 "freq": new_entry.freq,
                 "type": new_entry.type,
             })
+
+            if SONDEHUB_ENABLED:
+                if all([new_entry.lat, new_entry.lon, new_entry.alt, new_entry.time, new_entry.ser]):
+                    pkt = format_sondehub_packet(
+                        new_entry,
+                        SONDEHUB_UPLOADER,
+                        SONDEHUB_SOFTWARE_NAME,
+                        SONDEHUB_SOFTWARE_VERSION
+                    )
+                    if pkt:
+                        # print(f"Packet SondeHub: {pkt}")
+                        # sondehub.send_telemetry(pkt, batch_size=5)
+                        sondehub.send_telemetry(pkt)
+                else:
+                    print(f"SondeHub skip (incomplete data): {new_entry.ser}")
+
+
+
 
     except Exception as e:
         print(f"Error processing OWRX message: {e}")
@@ -290,6 +397,26 @@ def get_data():
     return jsonify(formatted_data)
 
 
+@app.route("/track/<ser>")
+def get_track(ser):
+    points = (
+        db.session.query(Radiosonda.lat, Radiosonda.lon, Radiosonda.alt)
+        .filter(
+            Radiosonda.ser == ser,
+            Radiosonda.lat.isnot(None),
+            Radiosonda.lon.isnot(None)
+        )
+        .order_by(Radiosonda.vframe.asc())
+        .all()
+    )
+
+    return jsonify([
+        {"lat": p.lat, "lon": p.lon, "alt": p.alt}
+        for p in points
+    ])
+
+
+
 def clean_subtype(subtype):
     if not subtype:
         return None
@@ -301,23 +428,257 @@ def map_view():
     return render_template("map.html")
 
 
+
+def detect_manufacturer(entry):
+    t = (entry.type or "").upper()
+    d = (getattr(entry, "device", "") or "").upper()
+    s = (entry.ser or "").upper()
+
+    # Vaisala
+    if (
+        "RS41" in t
+        or "RS41-SG" in t
+        or "RS41-SGP" in t
+        or "RS92" in t
+    ):
+        return "Vaisala"
+
+
+    # GRAW
+    if any(x in t for x in ("DFM06", "DFM09", "DFM17", "DFM", "PS15", "PS-15")):
+        return "Graw"
+
+
+    # Meteomodem
+    if "M10" in t or "M20" in t:
+        return "Meteomodem"
+
+    # Intermet
+    if "IMET" in t:
+        return "Intermet"
+
+    # MTS01 (Meisei)
+    if "MTS" in t or "MTS01" in t:
+        return "Meisei"
+
+    return "Other"
+
+
+def get_sondehub_serial(entry):
+    # RS41 / RS92 – is RAW
+    if entry.type and entry.type.upper().startswith(("RS41", "RS41-SG", "RS41-SGP", "RS92")):
+        return entry.ser
+
+    raw = entry.launchsite or entry.ser or ""
+    raw = raw.strip()
+
+    # Meteomodem (M10 / M20)
+    for p in ("M10-", "M20-"):
+        if raw.startswith(p):
+            return raw[len(p):]
+
+    # GRAW / DFM variants
+    for prefix in ("DFM06-", "DFM09-", "DFM17-", "DFM-", "PS15-", "PS-15-"):
+        if raw.startswith(prefix):
+            return raw[len(prefix):]
+
+    # D-xxxx numeric
+    if raw.startswith("D-"):
+        return raw[2:]
+    # Dxxxx numeric
+    if raw.startswith("D") and raw[1:].isdigit():
+        return raw[1:]
+
+    # fallback: first char is digit
+    if raw and raw[0].isdigit():
+        return raw
+
+    return None
+
+
+
+def format_sondehub_packet(entry, uploader, sw_name, sw_ver):
+    """
+    Minimal SondeHub packet for all meteosondes including DFM and M20.
+    Ensures uploader_position is a list [lat, lon, alt] for Receivers.
+    """
+    serial = get_sondehub_serial(entry)
+    if any(v is None for v in [entry.lat, entry.lon, entry.alt, serial]):
+        return None
+
+    # datetime paketa → fallback na vframe
+    pkt_datetime = getattr(entry, "datetime", None)
+    if pkt_datetime is None:
+        pkt_datetime = datetime.fromtimestamp(entry.vframe / 1000, tz=timezone.utc)
+
+    pkt_datetime_str = pkt_datetime.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    time_received_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+    # Calculate upload_time_delta (seconds as float)
+    now_utc = datetime.now(timezone.utc)
+    upload_time_delta = (pkt_datetime - now_utc).total_seconds()
+
+
+
+    manuf = detect_manufacturer(entry)
+    raw_type = getattr(entry, "type", "").upper()
+    pkt_type = raw_type
+    pkt_subtype = None
+
+    if raw_type.startswith("RS41"):
+        pkt_type = "RS41"
+        pkt_subtype = raw_type
+    elif raw_type.startswith("RS92"):
+        pkt_type = "RS92"
+        pkt_subtype = raw_type
+    elif raw_type.startswith("M10"):
+        pkt_type = "M10"
+    elif raw_type.startswith("M20"):
+        pkt_type = "M20"
+    elif raw_type.startswith("DFM") or raw_type.startswith("PS"):
+        pkt_type = "DFM"
+        pkt_subtype = raw_type
+
+    # Frame
+
+    # if pkt_type == "DFM":
+    #     pkt["frame"] = int(pkt_datetime.timestamp())  # Unix timestamp sekunde
+    # else:
+    #     pkt["frame"] = getattr(entry, "frame", 0)    # RS41, RS92, M10, M20
+
+
+    # Minimalni paket
+    pkt = {
+        "software_name": sw_name,
+        "software_version": sw_ver,
+        "uploader_callsign": uploader,
+        "uploader_position": [SONDEHUB_LAT, SONDEHUB_LON, SONDEHUB_ALT],
+        "manufacturer": manuf,
+        "type": pkt_type,
+        "serial": serial,
+        # "frame": pkt_frame,
+        "frame": int(entry.frame),
+        "datetime": pkt_datetime_str,
+        "time_received": time_received_str,
+        # "upload_time_delta": round(upload_time_delta, 3),
+        "upload_time_delta": round(upload_time_delta, 3),
+        "ref_position": "GPS",
+        "ref_datetime": "GPS",
+        "lat": float(entry.lat),
+        "lon": float(entry.lon),
+        "alt": float(entry.alt),
+        "position": f"{float(entry.lat):.5f},{float(entry.lon):.5f}"  # string za Receivers
+    }
+
+    # if SONDEHUB_ANTENNA:
+    #     pkt["uploader_antenna"] = SONDEHUB_ANTENNA
+
+    if pkt_subtype:
+        pkt["subtype"] = pkt_subtype
+
+    # Ako imamo frekvenciju u entry, dodaj
+    # frequency
+    if entry.freq:
+        if pkt_type in ["RS41", "RS92"]:
+            pkt["frequency"] = round(entry.freq / 1e6, 4)  # 4 decimale
+        else:
+            pkt["frequency"] = round(entry.freq / 1e6, 6)  # Meteomodem
+
+    # -----------------------------
+    # Uploader position handling
+    # -----------------------------
+    if pkt_type in ["M10", "M20"]:
+        # OVO OSTAVLJAMO - RADI
+        pkt["uploader_position"] = [SONDEHUB_LAT, SONDEHUB_LON, SONDEHUB_ALT]
+
+    else:
+        # RS41 / RS92
+        # pkt["uploader_position"] = f"{SONDEHUB_LAT:.5f},{SONDEHUB_LON:.5f}"
+        # pkt["uploader_alt"] = float(SONDEHUB_ALT)
+        pkt["uploader_position"] = [SONDEHUB_LAT, SONDEHUB_LON, SONDEHUB_ALT]
+
+        if SONDEHUB_ANTENNA:
+            pkt["uploader_antenna"] = SONDEHUB_ANTENNA
+
+        # Signal metrike
+        if hasattr(entry, "snr") and entry.snr is not None:
+            pkt["snr"] = float(entry.snr)
+
+        if hasattr(entry, "rssi") and entry.rssi is not None:
+            pkt["rssi"] = float(entry.rssi)
+
+        if entry.hs is not None:
+            # pkt["vel_h"] = float(entry.hs)
+            pkt["vel_h"] = float(entry.hs) / 3.6
+        if entry.vs is not None:
+            pkt["vel_v"] = float(entry.vs)
+        if entry.dir is not None:
+           pkt["heading"] = float(entry.dir)
+        if entry.batt is not None:
+            pkt["batt"] = float(entry.batt)
+
+        pkt["tx_frequency"] = round(entry.freq / 1e6, 2)  # MHz s 2 decimale
+        pkt["uploader_alt"] = float(SONDEHUB_ALT)       # obavezno
+
+
+        if pkt_type == "DFM":
+
+            # 1. datetime bez milisekundi
+            pkt["datetime"] = pkt_datetime.strftime("%Y-%m-%dT%H:%M:%S.000000Z")
+
+            # 2. ref_datetime mora biti UTC
+            pkt["ref_datetime"] = "UTC"
+
+            # 3. uploader_position mora biti string
+            pkt["uploader_position"] = f"{SONDEHUB_LAT:.5f},{SONDEHUB_LON:.5f}"
+            pkt["uploader_alt"] = float(SONDEHUB_ALT)
+
+        if pkt_type == "DFM":
+            dfm_code_map = {
+                "DFM17": "0xA",
+                "DFM06": "0x6",
+                "DFM09": "0x9",
+                "PS15": "0xF",
+                # dodaj ostale po potrebi
+            }
+            if pkt_subtype in dfm_code_map:
+                pkt["dfmcode"] = dfm_code_map[pkt_subtype]
+
+
+
+
+    return pkt
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 # =======================
 # MAIN
 # =======================
 
 if __name__ == "__main__":
-    aprs.start()
+
 
     try:
-        print("Starting Web server (IP:1191) + APRS + MQTT server for OpenWebRX SONDE by 9A4AM@2026 ...")
+        print("Starting Web server + APRS + SondeHub + MQTT server + Map for OpenWebRX+ RADIOSONDE by 9A4AM@2026 ...")
         app.run(debug=False, host="0.0.0.0", port=PORT_WEBSERVER)
-
-
-    except KeyboardInterrupt:
-        print("\nShutting down...")
 
     finally:
         aprs.stop()
+        if SONDEHUB_ENABLED:
+            sondehub.stop()
         client.disconnect()
         client.loop_stop()
-        print("Clean shutdown done")
+
+
