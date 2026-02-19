@@ -24,8 +24,8 @@ APRS_PASS   = config.get("APRS", "APRS_Pass", fallback="-1")
 APRS_SERVER = config.get("APRS", "APRS_Server", fallback="radiosondy.info")
 APRS_PORT   = config.getint("APRS", "APRS_Port", fallback=14580)
 
-APRS_LAT = config.getfloat("APRS", "APRS_Lat", fallback=0.0)
-APRS_LON = config.getfloat("APRS", "APRS_Lon", fallback=0.0)
+APRS_LAT = config.getfloat("STATION", "STATION_Lat", fallback=0.0)
+APRS_LON = config.getfloat("STATION", "STATION_Lon", fallback=0.0)
 
 APRS_BEACON_ENABLE  = config.getboolean("APRS", "APRS_Beacon_Enable", fallback=False)
 # APRS_BEACON_TEXT    = config.get("APRS", "APRS_Beacon", fallback="OWRX_Radiosonde uploader by 9A4AM")
@@ -132,6 +132,24 @@ def send_telemetry(data: dict):
             _send_beacon()
 
             ser = data.get("ser")
+            # Skip placeholder sonde IDs (DFM-xxxxxxxx, D-xxxxxxxx, Dxxxxxxxx)
+            if not ser:
+                return
+
+            s = ser.strip().lower()
+
+            # Skip placeholder / invalid DFM IDs:
+            # D, Dxxxx, D-xxxx, DFM-xxxx
+            if (
+                s == "d"
+                or (
+                    (s.startswith("dfm-") or s.startswith("d-") or s.startswith("d"))
+                    and "x" in s
+                )
+            ):
+                return
+
+
             lat = data.get("lat")
             lon = data.get("lon")
             alt = data.get("alt")
@@ -206,7 +224,8 @@ def _aprs_loop():
             if _sock is None:
                 _connect()
 
-            _send_beacon()
+            if APRS_BEACON_ENABLE:
+                _send_beacon()
             time.sleep(1)
 
         except Exception as e:
